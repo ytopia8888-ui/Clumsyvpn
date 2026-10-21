@@ -1,9 +1,11 @@
+
 name: Build Clumsy VPN APK
 
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches:
+      - main
 
 permissions:
   contents: read
@@ -25,18 +27,70 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Verify project files
+      - name: Extract project archives
+        shell: bash
         run: |
-          test -f settings.gradle.kts
-          test -f app/build.gradle.kts
-          test -f gradle.properties
+          set -e
+          mkdir -p _extracted
+
+          while IFS= read -r -d '' archive; do
+            echo "Extracting: $archive"
+            name="$(basename "$archive" .zip)"
+            mkdir -p "_extracted/$name"
+            unzip -o "$archive" -d "_extracted/$name"
+          done < <(find . -type f -name '*.zip' \
+            -not -path './.git/*' \
+            -not -path './_extracted/*' -print0)
+
+      - name: Find Android project
+        id: project
+        shell: bash
+        run: |
+          set -e
+
+          SETTINGS="$(find . \
+            -type f \
+            \( -name 'settings.gradle.kts' -o -name 'settings.gradle' \) \
+            -not -path './.git/*' \
+            -not -path './.gradle/*' \
+            | head -n 1)"
+
+          if [ -z "$SETTINGS" ]; then
+            echo "ERROR: Gradle settings file not found."
+            echo "Repository files:"
+            find . -maxdepth 5 -type f | head -n 200
+            exit 1
+          fi
+
+          PROJECT_DIR="$(dirname "$SETTINGS")"
+          echo "Project directory: $PROJECT_DIR"
+
+          if [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ] && \
+             [ ! -f "$PROJECT_DIR/app/build.gradle" ]; then
+            echo "ERROR: app/build.gradle(.kts) not found in $PROJECT_DIR"
+            find "$PROJECT_DIR" -maxdepth 4 -type f | head -n 200
+            exit 1
+          fi
+
+          if [ ! -f "$PROJECT_DIR/gradle.properties" ]; then
+            touch "$PROJECT_DIR/gradle.properties"
+          fi
+
+          if ! grep -qxF 'android.useAndroidX=true' \
+            "$PROJECT_DIR/gradle.properties"; then
+            echo 'android.useAndroidX=true' \
+              >> "$PROJECT_DIR/gradle.properties"
+          fi
+
+          echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
 
       - name: Build APK
-        run: gradle assembleDebug
+        run: gradle -p "${{ steps.project.outputs.dir }}" assembleDebug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: ClumsyVPN-debug
-          path: app/build/outputs/apk/debug/*.apk
+          path: |
+            **/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
